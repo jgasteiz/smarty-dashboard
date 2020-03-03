@@ -3,7 +3,7 @@ include .env
 export
 
 serve:
-	flask run
+	flask run --host=0.0.0.0
 
 lint:
 	isort -rc .
