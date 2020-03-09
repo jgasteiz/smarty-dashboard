@@ -1,4 +1,4 @@
-from flask import Flask, escape, request, render_template
+from flask import Flask, render_template
 
 from . import smarty_client
 
