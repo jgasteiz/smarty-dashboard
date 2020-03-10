@@ -1,6 +1,7 @@
+import decimal
 from datetime import datetime, timedelta
 from decimal import Decimal as D
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 
@@ -26,37 +27,42 @@ class SmartyClient:
         self.email = settings.SMARTY_EMAIL
         self.password = settings.SMARTY_PASSWORD
 
-    def get_usage(self, retry: bool = True) -> str:
-        """
-        Get the remaining usage.
-        """
+    def get_usage_as_text(self):
         # If we have a recent enough cached usage, return that.
-        saved_usage = self._get_saved_usage()
-        if saved_usage:
-            return saved_usage
+        usage_values = self._get_usage_values()
+        if usage_values:
+            return self._get_usage_as_text(usage_values)
+        else:
+            return self._get_usage_as_text(self._get_usage_from_api())
 
-        # Otherwise, get the usage from the API.
+    def get_usage_values(self):
+        usage_values = self._get_usage_values()
+        if usage_values:
+            return usage_values
+        else:
+            return self._get_usage_from_api()
+
+    def _get_usage_from_api(self, retry=True):
         headers = {"Authorization": f"Bearer {self._get_token()}"}
         response = requests.get(self.USAGE_URL, headers=headers)
         if retry and response.status_code == 401:
             self._clear_token()
-            return self.get_usage(retry=False)
+            return self._get_usage_from_api(retry=False)
         elif response.status_code != 200:
             raise UnableToGetUsage(f"{response.status_code} - Unable to get usage")
 
         response_json = response.json()
+        self._save_usage(response_json)
 
-        plan = response_json["data"]["attributes"]["plan"]["bundles"][2]
+        return response_json
+
+    def _get_usage_as_text(self, usage_values):
+        plan = usage_values["data"]["attributes"]["plan"]["bundles"][2]
         limit = D(plan["limit"]["value"])
         used = D(plan["used"]["value"])
         remaining_gb = (limit - used) / D("1024") / D("1024")
         limit_gb = limit / D("1024") / D("1024")
-        usage = f"{round(remaining_gb, 2)}GB left of {limit_gb}GB"
-
-        # Cache the usage.
-        self._save_usage(usage)
-
-        return usage
+        return f"{round(remaining_gb, 2)}GB left of {limit_gb}GB"
 
     def _get_token(self) -> str:
         db = db_client.DBClient.get_db()
@@ -81,12 +87,12 @@ class SmartyClient:
         del db["token"]
         db_client.DBClient.update_db(db)
 
-    def _save_usage(self, usage: str):
+    def _save_usage(self, response_json: dict):
         db = db_client.DBClient.get_db()
-        db["usage"] = {"value": usage, "updated_at": self._get_timestamp()}
+        db["usage"] = {"response_json": response_json, "updated_at": self._get_timestamp()}
         db_client.DBClient.update_db(db)
 
-    def _get_saved_usage(self) -> Optional[str]:
+    def _get_usage_values(self) -> Optional[dict]:
         db = db_client.DBClient.get_db()
         if "usage" in db:
             try:
@@ -95,8 +101,8 @@ class SmartyClient:
                 )
             except (KeyError, ValueError):
                 return None
-            if updated_at > datetime.now() - timedelta(minutes=5):
-                return db["usage"]["value"]
+            if updated_at > datetime.now() - timedelta(minutes=10):
+                return db["usage"]["response_json"]
         return None
 
     def _get_timestamp(self) -> str:
